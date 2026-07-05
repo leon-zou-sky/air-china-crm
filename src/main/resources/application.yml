@@ -13,6 +13,28 @@ spring:
     time-zone: GMT+8
     default-property-inclusion: non_null
 
+  # RabbitMQ 配置
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+    virtual-host: /
+    # 生产者确认模式
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    # 消费者手动ACK
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 1
+        retry:
+          enabled: true
+          initial-interval: 3000
+          max-attempts: 3
+
 # MyBatis-Plus
 mybatis-plus:
   mapper-locations: classpath:mapper/**/*.xml

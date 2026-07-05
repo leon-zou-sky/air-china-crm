@@ -2,6 +2,10 @@ package com.airchina.crm.workorder.service;
 
 import com.airchina.crm.common.enums.SlaStatus;
 import com.airchina.crm.common.enums.WorkOrderStatus;
+import com.airchina.crm.common.mq.SlaAlertMessage;
+import com.airchina.crm.common.mq.SlaAlertProducer;
+import com.airchina.crm.member.entity.Member;
+import com.airchina.crm.member.mapper.MemberMapper;
 import com.airchina.crm.workorder.entity.WorkOrder;
 import com.airchina.crm.workorder.mapper.WorkOrderMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -34,6 +38,8 @@ import java.util.List;
 public class SlaMonitorService {
 
     private final WorkOrderMapper workOrderMapper;
+    private final SlaAlertProducer slaAlertProducer;
+    private final MemberMapper memberMapper;
 
     /** 即将超时阈值：30分钟 */
     private static final int RISK_MINUTES = 30;
@@ -133,11 +139,7 @@ public class SlaMonitorService {
     /**
      * 告警处理（可插拔设计）
      *
-     * 当前实现：日志打印
-     * 后续扩展：
-     *   - rabbitTemplate.convertAndSend("crm.sla.exchange", "", alertMessage)
-     *   - dingTalkService.sendAlert(alertMessage)
-     *   - emailService.sendAlert(alertMessage)
+     * 当前实现：日志打印 + MQ通知
      */
     private void alert(WorkOrder order, SlaStatus oldStatus, SlaStatus newStatus) {
         Duration remaining = Duration.between(LocalDateTime.now(), order.getSlaDeadline());
@@ -154,17 +156,51 @@ public class SlaMonitorService {
         switch (newStatus) {
             case AT_RISK:
                 log.warn("⚠️ {}", message);
-                // TODO: 接 MQ 发消息
-                // rabbitTemplate.convertAndSend("crm.sla.exchange", "", message);
+                // 发送MQ告警
+                sendSlaAlert(order, newStatus, remainMinutes);
                 break;
             case BREACHED:
                 log.error("🔴 {}", message);
-                // TODO: 接 MQ 发消息
-                // rabbitTemplate.convertAndSend("crm.sla.exchange", "", message);
+                // 发送MQ告警
+                sendSlaAlert(order, newStatus, remainMinutes);
                 break;
             default:
                 log.info("✅ {}", message);
                 break;
+        }
+    }
+
+    /**
+     * 发送SLA告警MQ消息
+     */
+    private void sendSlaAlert(WorkOrder order, SlaStatus slaStatus, long remainMinutes) {
+        try {
+            Member member = memberMapper.selectById(order.getMemberId());
+            String memberName = member != null ? member.getName() : "未知";
+            String memberTier = member != null ? member.getTier() : "";
+
+            SlaAlertMessage alertMessage = SlaAlertMessage.builder()
+                    .orderId(order.getOrderId())
+                    .orderNo(order.getOrderNo())
+                    .airportCode(order.getAirportCode())
+                    .serviceType(order.getServiceType())
+                    .memberName(memberName)
+                    .memberTier(memberTier)
+                    .currentStatus(order.getStatus())
+                    .slaStatus(slaStatus.getCode())
+                    .slaDeadline(order.getSlaDeadline())
+                    .remainingMinutes(remainMinutes)
+                    .build();
+
+            if (slaStatus == SlaStatus.AT_RISK) {
+                slaAlertProducer.sendAtRiskAlert(alertMessage);
+            } else if (slaStatus == SlaStatus.BREACHED) {
+                slaAlertProducer.sendBreachedAlert(alertMessage);
+            }
+
+            log.debug("SLA告警MQ消息已发送：orderNo={}, slaStatus={}", order.getOrderNo(), slaStatus);
+        } catch (Exception e) {
+            log.error("SLA告警MQ消息发送失败：orderNo={}", order.getOrderNo(), e);
         }
     }
 

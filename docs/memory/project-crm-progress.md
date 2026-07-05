@@ -27,12 +27,13 @@ GitHub: https://github.com/leon-zou-sky/air-china-crm
 6. 退改签规则引擎：优先级匹配（会员等级×舱位×变更类型）、PERCENT/FIXED 费率
 7. 客户360视图：门面模式聚合会员+积分+工单，Redis 缓存（5min TTL）
 8. SLA 超时监控：@Scheduled 每5分钟扫描，NORMAL→AT_RISK(≤30min)→BREACHED，日志告警
+9. RabbitMQ 消息通知：积分变动/工单派发/SLA告警，Topic/Direct/Fanout Exchange
+10. Swagger 接口文档：OpenAPI 3.0，Swagger UI 在线调试
+11. 客服知识库：Elasticsearch + IK中文分词，27条示例数据，支持全文搜索、高亮、分类筛选
+12. Kibana 可视化：ES 数据可视化工具，支持 Discover、Visualize、Dashboard
 
 ## 未完成 ❌
-- RabbitMQ 期息通知（积分变动→短信/营销、工单派发→机场、SLA→钉钉）
-- Elasticsearch 搜索
 - Docker Compose 一键部署
-- Swagger 接口文档
 - 操作日志（AOP）
 - 积分过期处理
 - 报表统计
@@ -42,6 +43,11 @@ GitHub: https://github.com/leon-zou-sky/air-china-crm
 - Redis 容错：所有 Redis 操作 try-catch，不可用时降级查库
 - 工单号生成：WO + 日期 + 随机4位（避免重启冲突）
 - SLA 告警：当前日志打印，预留 MQ 扩展点（alert() 方法）
+- RabbitMQ：Topic（积分通知）、Direct（工单派发）、Fanout（SLA告警）
+- ES 搜索：IK 分词器，标题权重3倍、关键词2倍、内容1倍
+- 知识库设计：7大分类，27条示例数据（PLATFORM/TICKET/FAQ/SERVICE/BENEFITS/SCRIPT/SYSTEM）
+- 数据导入：Python脚本导入Excel → ES，支持批量导入和增量更新
+- Kibana 可视化：Index Pattern = crm_knowledge*，时间字段 = createTime
 
 ## 用户环境
 - macOS, JDK 11 (OpenJDK 11.0.31)

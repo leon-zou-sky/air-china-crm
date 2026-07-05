@@ -3,6 +3,8 @@ package com.airchina.crm.miles.service.impl;
 import com.airchina.crm.common.config.RedisCacheHelper;
 import com.airchina.crm.common.enums.MilesTxType;
 import com.airchina.crm.common.exception.BizException;
+import com.airchina.crm.common.mq.MilesMessage;
+import com.airchina.crm.common.mq.MilesMessageProducer;
 import com.airchina.crm.common.result.ResultCode;
 import com.airchina.crm.miles.dto.MilesDeductDTO;
 import com.airchina.crm.miles.dto.MilesEarnDTO;
@@ -12,6 +14,8 @@ import com.airchina.crm.miles.mapper.MilesAccountMapper;
 import com.airchina.crm.miles.mapper.MilesTransactionMapper;
 import com.airchina.crm.miles.service.MilesService;
 import com.airchina.crm.miles.vo.MilesBalanceVO;
+import com.airchina.crm.member.entity.Member;
+import com.airchina.crm.member.mapper.MemberMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +42,8 @@ public class MilesServiceImpl extends ServiceImpl<MilesTransactionMapper, MilesT
 
     private final MilesAccountMapper milesAccountMapper;
     private final RedisCacheHelper redisCacheHelper;
+    private final MilesMessageProducer milesMessageProducer;
+    private final MemberMapper memberMapper;
 
     private static final int MAX_RETRY = 3;
     private static final String CACHE_KEY_BALANCE = "miles:balance:";
@@ -167,6 +173,10 @@ public class MilesServiceImpl extends ServiceImpl<MilesTransactionMapper, MilesT
         // 6. 清除缓存（下次读取时重新加载）
         evictBalanceCache(memberId);
 
+        // 7. 发送MQ消息通知
+        sendMilesNotification(memberId, "REDEEM", -miles, account.getBalance(),
+                dto.getSource(), dto.getReferenceId(), dto.getDescription(), dto.getOperator());
+
         log.info("积分扣减成功：memberId={}, miles={}, balanceAfter={}", memberId, miles, account.getBalance());
     }
 
@@ -203,6 +213,10 @@ public class MilesServiceImpl extends ServiceImpl<MilesTransactionMapper, MilesT
         // 4. 清除缓存
         evictBalanceCache(memberId);
 
+        // 5. 发送MQ消息通知
+        sendMilesNotification(memberId, "EARN", miles, account.getBalance(),
+                dto.getSource(), dto.getReferenceId(), dto.getDescription(), dto.getOperator());
+
         log.info("积分发放成功：memberId={}, miles={}, balanceAfter={}", memberId, miles, account.getBalance());
     }
 
@@ -229,5 +243,39 @@ public class MilesServiceImpl extends ServiceImpl<MilesTransactionMapper, MilesT
         vo.setTotalExpired(account.getTotalExpired());
         vo.setVersion(account.getVersion());
         return vo;
+    }
+
+    /**
+     * 发送积分变动MQ通知
+     */
+    private void sendMilesNotification(Long memberId, String txType, int miles, int balanceAfter,
+                                       String source, String referenceId, String description, String operator) {
+        try {
+            Member member = memberMapper.selectById(memberId);
+            if (member == null) {
+                log.warn("发送MQ通知时会员不存在：memberId={}", memberId);
+                return;
+            }
+
+            MilesMessage message = MilesMessage.builder()
+                    .memberId(memberId)
+                    .memberNo(member.getMemberNo())
+                    .memberName(member.getName())
+                    .mobile(member.getMobile())
+                    .txType(txType)
+                    .miles(miles)
+                    .balanceAfter(balanceAfter)
+                    .source(source)
+                    .referenceId(referenceId)
+                    .description(description)
+                    .operator(operator)
+                    .build();
+
+            milesMessageProducer.sendAll(message);
+            log.debug("积分变动MQ通知已发送：memberId={}, txType={}", memberId, txType);
+        } catch (Exception e) {
+            // MQ发送失败不影响主业务
+            log.error("积分变动MQ通知发送失败：memberId={}, txType={}", memberId, txType, e);
+        }
     }
 }
