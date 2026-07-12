@@ -15,9 +15,8 @@ GitHub: https://github.com/leon-zou-sky/air-china-crm
 - Spring Boot 2.7.18 + JDK 11 + MyBatis-Plus 3.5
 - MySQL 8.0 (Docker port 3307, password: 123456)
 - Redis 单机 (localhost:6379)
-- RabbitMQ 3.x (Docker port 5672/15672)
-- Elasticsearch 7.17 + IK分词
 - 单体架构，Service 接口+实现分离（为后面 Dubbo 预留）
+- 开发顺序：会员 → 积分 → 工单 → 退改签 → 360视图
 
 ## 已完成 ✅
 1. 项目脚手架 + 通用层（Result、异常、枚举、配置）
@@ -28,21 +27,10 @@ GitHub: https://github.com/leon-zou-sky/air-china-crm
 6. 退改签规则引擎：优先级匹配（会员等级×舱位×变更类型）、PERCENT/FIXED 费率
 7. 客户360视图：门面模式聚合会员+积分+工单，Redis 缓存（5min TTL）
 8. SLA 超时监控：@Scheduled 每5分钟扫描，NORMAL→AT_RISK(≤30min)→BREACHED，日志告警
-9. RabbitMQ 消息通知（积分变动/工单派发/SLA告警）
-10. Swagger 接口文档
-11. Elasticsearch 客服知识库
-
-## 简历包装方案（2个项目）
-
-### 项目一：国航凤凰知音会员积分系统（2023.06-2024.03，约10个月）
-- 会员管理、积分系统（乐观锁）、退改签规则引擎、客户360视图
-- 技术亮点：乐观锁+重试、Cache Aside缓存、规则引擎优先级匹配
-- 成果：积分查询3s→50ms，支撑500TPS
-
-### 项目二：国航机场工单服务系统（2024.04-2024.12，约9个月）
-- 工单管理、状态机引擎、SLA监控、模板配置化、MQ派发
-- 技术亮点：状态机模式、SLA分级告警、模板驱动配置化
-- 成果：工单效率提升40%，SLA超时率15%→3%
+9. RabbitMQ 消息通知：积分变动/工单派发/SLA告警，Topic/Direct/Fanout Exchange
+10. Swagger 接口文档：OpenAPI 3.0，Swagger UI 在线调试
+11. 客服知识库：Elasticsearch + IK中文分词，27条示例数据，支持全文搜索、高亮、分类筛选
+12. Kibana 可视化：ES 数据可视化工具，支持 Discover、Visualize、Dashboard
 
 ## 未完成 ❌
 - Docker Compose 一键部署
@@ -55,7 +43,11 @@ GitHub: https://github.com/leon-zou-sky/air-china-crm
 - Redis 容错：所有 Redis 操作 try-catch，不可用时降级查库
 - 工单号生成：WO + 日期 + 随机4位（避免重启冲突）
 - SLA 告警：当前日志打印，预留 MQ 扩展点（alert() 方法）
-- 简历拆分：CRM 和工单拆成2个项目，更贴合实际（不同团队维护）
+- RabbitMQ：Topic（积分通知）、Direct（工单派发）、Fanout（SLA告警）
+- ES 搜索：IK 分词器，标题权重3倍、关键词2倍、内容1倍
+- 知识库设计：7大分类，27条示例数据（PLATFORM/TICKET/FAQ/SERVICE/BENEFITS/SCRIPT/SYSTEM）
+- 数据导入：Python脚本导入Excel → ES，支持批量导入和增量更新
+- Kibana 可视化：Index Pattern = crm_knowledge*，时间字段 = createTime
 
 ## 用户环境
 - macOS, JDK 11 (OpenJDK 11.0.31)
