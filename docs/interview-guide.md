@@ -1048,6 +1048,332 @@ A：采用Redis缓存 + 乐观锁 + MQ异步通知
 R：查询响应从3秒降至50ms，扣减成功率99.9%
 ```
 
+### 3.8 第二优先级补充
+
+#### Q21：Linux 线上问题排查
+
+**CPU 飙高排查**：
+
+```bash
+# 1. 找到 CPU 高的进程
+top -c
+
+# 2. 找到该进程中 CPU 高的线程
+top -Hp <pid>
+
+# 3. 线程 ID 转 16 进制
+printf "%x\n" <tid>
+
+# 4. jstack 导出线程栈，搜索该线程
+jstack <pid> | grep <tid_hex> -A 30
+
+# Python 排查
+py-spy top --pid <pid>  # 实时查看 Python 函数调用
+py-spy dump --pid <pid>  # 导出调用栈
+```
+
+**内存飙高排查**：
+
+```bash
+# 1. 查看内存使用
+free -h
+
+# 2. 找到内存高的进程
+ps aux --sort=-%mem | head -10
+
+# 3. Python 内存分析
+import tracemalloc
+tracemalloc.start()
+# ... 代码执行 ...
+snapshot = tracemalloc.take_snapshot()
+for stat in snapshot.statistics('lineno')[:10]:
+    print(stat)
+
+# 4. Go 内存分析
+go tool pprof http://localhost:6060/debug/pprof/heap
+```
+
+**磁盘满排查**：
+
+```bash
+# 1. 查看磁盘使用
+df -h
+
+# 2. 找到大文件
+du -sh /* | sort -hr | head -10
+
+# 3. 找到大日志文件
+find /var/log -type f -size +100M
+
+# 4. 清理日志（不要直接 rm，用 > 清空）
+> /var/log/large.log
+```
+
+**网络问题排查**：
+
+```bash
+# 1. 端口是否监听
+netstat -tlnp | grep 8080
+ss -tlnp | grep 8080
+
+# 2. 连接数统计
+netstat -an | awk '/^tcp/ {print $6}' | sort | uniq -c
+
+# 3. DNS 解析
+nslookup example.com
+dig example.com
+
+# 4. 抓包分析
+tcpdump -i eth0 port 8080 -w capture.pcap
+```
+
+---
+
+#### Q22：分布式锁实现方案
+
+**Redis 实现**：
+
+```python
+# 基础版：SETNX + 过期时间
+import redis
+
+def acquire_lock(client, lock_name, expire=10):
+    identifier = str(uuid.uuid4())
+    if client.set(lock_name, identifier, nx=True, ex=expire):
+        return identifier
+    return None
+
+def release_lock(client, lock_name, identifier):
+    # Lua 脚本保证原子性
+    lua_script = """
+    if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+    else
+        return 0
+    end
+    """
+    return client.eval(lua_script, 1, lock_name, identifier)
+```
+
+**问题与解决**：
+
+```
+问题1：锁过期但业务没执行完
+→ 看门狗机制：后台线程定期续期（Redisson方案）
+
+问题2：Redis 主从切换，锁丢失
+→ RedLock：向 N 个 Redis 实例加锁，多数成功才算成功
+
+问题3：可重入锁
+→ Hash 结构：lock_name → {thread_id: count}
+```
+
+**Go 实现**：
+
+```go
+func acquireLock(ctx context.Context, client *redis.Client, key string, ttl time.Duration) (string, error) {
+    id := uuid.New().String()
+    ok, err := client.SetNX(ctx, key, id, ttl).Result()
+    if err != nil || !ok {
+        return "", errors.New("lock acquired failed")
+    }
+    return id, nil
+}
+```
+
+---
+
+#### Q23：设计一个内容审核任务分发系统
+
+```
+需求：
+- 海量内容提交审核（图片/视频/文本）
+- 多个审核 worker 消费任务
+- 审核结果回调通知
+- 支持优先级、超时、重试
+
+架构设计：
+
+┌──────────┐     ┌──────────┐     ┌──────────┐
+│ Producer │────▶│  Kafka   │────▶│ Consumer │
+│ 内容提交  │     │  Topic   │     │  Group   │
+└──────────┘     └──────────┘     └──────────┘
+                                       │
+                     ┌─────────────────┼─────────────────┐
+                     ▼                 ▼                 ▼
+              ┌──────────┐     ┌──────────┐     ┌──────────┐
+              │ Worker 1 │     │ Worker 2 │     │ Worker 3 │
+              └──────────┘     └──────────┘     └──────────┘
+                     │                 │                 │
+                     └─────────────────┼─────────────────┘
+                                       ▼
+                              ┌──────────────┐
+                              │   Callback   │
+                              │   Service    │
+                              └──────────────┘
+
+关键设计：
+
+1. 任务分发
+   - Kafka Consumer Group 负载均衡
+   - 分区数 = Worker 数（一对一消费）
+   - 支持动态扩缩容
+
+2. 去重
+   - Redis SET 存储内容 hash
+   - SETNX 原子去重
+
+3. 优先级
+   - 多 Topic：high/normal/low
+   - Worker 先消费 high Topic
+
+4. 超时处理
+   - Redis 延迟队列
+   - 超时任务重新入队
+   - 死信队列处理多次失败的任务
+
+5. 回调通知
+   - 完成后发 MQ 消息
+   - 业务方异步消费
+
+6. 高可用
+   - Worker 挂了自动重平衡
+   - 数据库持久化审核记录
+   - 监控告警（Prometheus + Grafana）
+```
+
+---
+
+### 3.9 第三优先级（加分项）
+
+#### Q24：分布式事务怎么解决？
+
+```
+场景：积分扣减 + 订单创建，跨服务事务
+
+方案对比：
+
+1. 2PC（两阶段提交）
+   - 准备阶段：协调者询问所有参与者是否可以提交
+   - 提交阶段：所有参与者同意，协调者通知提交
+   - 问题：性能差、协调者单点故障
+
+2. TCC（Try-Confirm-Cancel）
+   - Try：预留资源（冻结积分）
+   - Confirm：确认提交（扣减冻结积分）
+   - Cancel：取消（解冻积分）
+   - 适合：业务侵入性强，需要实现三个接口
+
+3. 本地消息表
+   - 本地事务：写业务数据 + 写消息表（同一个事务）
+   - 后台任务：扫描消息表，发 MQ
+   - 下游消费：处理成功，删除消息
+   - 适合：最终一致性场景
+
+4. Saga 模式
+   - 每个服务有正向操作和补偿操作
+   - 失败时按反向顺序执行补偿
+   - 适合：长事务、跨多服务
+
+你的项目选择：
+- 积分扣减：本地事务（同一个服务内）
+- MQ通知：本地消息表（最终一致性）
+- 不需要分布式事务（业务上允许短暂不一致）
+```
+
+---
+
+#### Q25：微服务拆分原则？
+
+```
+拆分维度：
+
+1. 业务边界（DDD 领域驱动）
+   - 会员域：会员管理、积分、等级
+   - 工单域：工单、模板、SLA
+   - 通知域：短信、邮件、钉钉
+
+2. 数据独立
+   - 每个服务独立数据库
+   - 服务间通过 API 访问，不共享数据库
+
+3. 团队边界
+   - 一个服务一个团队负责
+   - 团队间通过接口契约协作
+
+4. 变更频率
+   - 变更频繁的模块独立（积分规则）
+   - 变更少的模块合并（基础配置）
+
+你的项目拆分：
+- crm-web：主应用（会员、360视图）
+- crm-miles-service：积分服务（高并发，独立扩缩容）
+- crm-workorder-service：工单服务（对接外部系统）
+```
+
+---
+
+#### Q26：Go 的 GMP 调度模型？
+
+```
+G（Goroutine）：
+- 用户态协程，轻量级（初始栈 2KB）
+- 由 Go runtime 调度
+
+M（Machine）：
+- 操作系统线程
+- 执行 G 的实际载体
+
+P（Processor）：
+- 逻辑处理器，数量 = GOMAXPROCS
+- 本地队列：存放待执行的 G
+
+调度流程：
+1. G 创建 → 放入 P 的本地队列
+2. M 从 P 的本地队列取 G 执行
+3. 本地队列空 → 从全局队列取 / 从其他 P 偷
+4. G 阻塞（系统调用）→ M 阻塞，P 绑定其他 M
+5. G 阻塞结束 → G 放入全局队列，M 空闲
+
+为什么高效：
+- 用户态调度，无内核切换开销
+- 本地队列减少锁竞争
+- Work Stealing 均衡负载
+```
+
+---
+
+#### Q27：Python 的内存管理？
+
+```
+1. 引用计数
+   - 每个对象有引用计数器
+   - 引用 +1，删除引用 -1
+   - 计数 = 0 → 立即释放
+
+2. 垃圾回收（GC）
+   - 分代回收：0代（新建）、1代、2代
+   - 阈值触发：0代对象数 > 700 → GC
+   - 循环引用检测：标记-清除算法
+
+3. 内存池
+   - 小对象（< 512B）：pymalloc 内存池
+   - 大对象：直接调用 malloc
+   - 内存池复用，减少系统调用
+
+4. 内存泄漏排查
+   import gc
+   gc.set_debug(gc.DEBUG_LEAK)
+   gc.collect()
+   print(gc.garbage)  # 不可回收的对象
+
+   import objgraph
+   objgraph.show_most_common_types()  # 对象类型统计
+   objgraph.show_growth()  # 增长的对象
+```
+
+---
+
 ### 4.2 技术深度展示
 
 ```
